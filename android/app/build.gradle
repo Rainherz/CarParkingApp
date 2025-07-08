@@ -110,10 +110,15 @@ android {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    // classpath 'com.google.gms:google-services:4.4.2'
+    // implementation platform('com.google.firebase:firebase-bom:33.16.0')
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
     } else {
         implementation jscFlavor
     }
+    implementation project(':react-native-sqlite-storage')
+    implementation project(':react-native-vector-icons')
+    implementation project(':react-native-vision-camera')
 }

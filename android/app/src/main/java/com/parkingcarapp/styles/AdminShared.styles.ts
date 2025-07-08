@@ -1,0 +1,146 @@
+import { StyleSheet } from "react-native";
+
+export const adminSharedStyles = StyleSheet.create({
+    container: {
+        flex: 1,
+        backgroundColor: "#f5f5f5",
+    },
+    header: {
+        flexDirection: "row",
+        alignItems: "center",
+        backgroundColor: "#fff",
+        paddingHorizontal: 20,
+        paddingVertical: 16,
+        borderBottomWidth: 1,
+        borderBottomColor: "#e0e0e0",
+    },
+    backButton: {
+        marginRight: 12,
+        padding: 8,
+    },
+    headerTextContainer: {
+        flex: 1,
+    },
+    headerTitle: {
+        fontSize: 24,
+        fontWeight: "bold",
+        color: "#2E7D32",
+    },
+    headerSubtitle: {
+        fontSize: 14,
+        color: "#666",
+        marginTop: 2,
+    },
+    contentContainer: {
+        flex: 1,
+        padding: 16,
+    },
+    card: {
+        backgroundColor: "#fff",
+        padding: 20,
+        borderRadius: 12,
+        marginBottom: 16,
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 3,
+    },
+    sectionTitle: {
+        fontSize: 18,
+        fontWeight: "600",
+        color: "#333",
+        marginBottom: 16,
+    },
+    button: {
+        backgroundColor: "#2E7D32",
+        paddingVertical: 12,
+        paddingHorizontal: 20,
+        borderRadius: 8,
+        alignItems: "center",
+        marginBottom: 12,
+    },
+    buttonSecondary: {
+        backgroundColor: "#666",
+    },
+    buttonDanger: {
+        backgroundColor: "#FF6B35",
+    },
+    buttonText: {
+        color: "#fff",
+        fontSize: 16,
+        fontWeight: "600",
+    },
+    filterContainer: {
+        backgroundColor: "#fff",
+        padding: 16,
+        borderRadius: 12,
+        marginBottom: 16,
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 3,
+    },
+    filterRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        marginBottom: 12,
+        gap: 12,
+    },
+    filterInput: {
+        flex: 1,
+        borderWidth: 1,
+        borderColor: "#ddd",
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        fontSize: 16,
+    },
+    listItem: {
+        backgroundColor: "#fff",
+        padding: 16,
+        borderRadius: 8,
+        marginBottom: 8,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.05,
+        shadowRadius: 2,
+        elevation: 1,
+    },
+    listItemContent: {
+        flex: 1,
+    },
+    listItemTitle: {
+        fontSize: 16,
+        fontWeight: "600",
+        color: "#333",
+        marginBottom: 4,
+    },
+    listItemSubtitle: {
+        fontSize: 14,
+        color: "#666",
+    },
+    listItemActions: {
+        flexDirection: "row",
+        gap: 8,
+    },
+    actionButton: {
+        padding: 8,
+        borderRadius: 6,
+        backgroundColor: "#f8f9fa",
+    },
+    emptyState: {
+        alignItems: "center",
+        paddingVertical: 40,
+        gap: 12,
+    },
+    emptyText: {
+        fontSize: 16,
+        color: "#999",
+        textAlign: "center",
+    },
+});

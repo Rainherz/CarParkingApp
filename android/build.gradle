@@ -1,9 +1,9 @@
 buildscript {
     ext {
-        buildToolsVersion = "35.0.0"
+        buildToolsVersion = "34.0.0"
         minSdkVersion = 24
-        compileSdkVersion = 35
-        targetSdkVersion = 35
+        compileSdkVersion = 34  
+        targetSdkVersion = 34    
         ndkVersion = "27.1.12297006"
         kotlinVersion = "2.1.20"
     }
@@ -16,6 +16,19 @@ buildscript {
         classpath("com.facebook.react:react-native-gradle-plugin")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")
     }
-}
 
-apply plugin: "com.facebook.react.rootproject"
+    subprojects {
+        afterEvaluate { project ->
+            if (project.hasProperty("android")) {
+            project.android {
+                compileSdkVersion = 34
+                buildToolsVersion = "34.0.0"
+
+                defaultConfig {
+                targetSdkVersion = 34
+                }
+            }
+            }
+        }
+    }
+}
