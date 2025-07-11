@@ -118,7 +118,8 @@ dependencies {
     } else {
         implementation jscFlavor
     }
-    implementation project(':react-native-sqlite-storage')
+    // implementation project(':react-native-sqlite-storage')
+
     implementation project(':react-native-vector-icons')
     implementation project(':react-native-vision-camera')
 }

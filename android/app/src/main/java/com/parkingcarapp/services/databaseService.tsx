@@ -1,7 +1,15 @@
-import SQLite from 'react-native-sqlite-storage';
+import { createClient, SupabaseClient, RealtimeChannel } from '@supabase/supabase-js';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-SQLite.enablePromise(true);
+// ========================================
+// CONFIGURACIÓN DE SUPABASE
+// ========================================
+const supabaseUrl = 'https://gpxzykdevxgoqcrbcobg.supabase.co'; // ← CAMBIAR POR TU URL
+const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdweHp5a2Rldnhnb3FjcmJjb2JnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIyNTM2NDgsImV4cCI6MjA2NzgyOTY0OH0.JLz9z8i6YXMfnEKk6AM3VLi32uM35sIDqm6CQYdxACw'; // ← CAMBIAR POR TU KEY
 
+// ========================================
+// INTERFACES (mantienen compatibilidad con código existente)
+// ========================================
 interface VehicleEntry {
   id?: number;
   plateNumber: string;
@@ -21,198 +29,204 @@ interface DailySummary {
   averageStay: number; // en minutos
 }
 
+// ========================================
+// SERVICIO DE BASE DE DATOS CON SUPABASE + OFFLINE + REALTIME
+// ========================================
 class DatabaseService {
-  public db: SQLite.SQLiteDatabase | null = null;
+  private supabase: SupabaseClient | null = null;
+  private isOnline: boolean = true;
+  private realtimeChannels: RealtimeChannel[] = [];
+  private offlineQueue: any[] = [];
+  
+  // Cache offline para operación sin internet
+  private cache = {
+    activeVehicles: [] as VehicleEntry[],
+    settings: {} as Record<string, string>,
+    operators: [] as any[],
+    lastSync: null as Date | null,
+  };
 
   constructor() {
-    // No inicialices aquí, hazlo desde App.tsx
+    // Inicializar cliente de Supabase
+    this.supabase = createClient(supabaseUrl, supabaseAnonKey);
+    this.setupNetworkListener();
   }
 
-  // Inicializar la base de datos SQLite
+  // ========================================
+  // INICIALIZACIÓN (reemplaza el SQLite init)
+  // ========================================
   public async initDatabase() {
     try {
-      console.time('SQLite.openDatabase');
-      this.db = await SQLite.openDatabase({
-        name: 'parking_control.db',
-        location: 'default',
-        // createFromLocation: '~parking_control.db', // solo si tienes un .db pre-poblado
-      });
-      console.timeEnd('SQLite.openDatabase');
+      console.log('🔄 Conectando a Supabase...');
+      
+      if (!this.supabase) {
+        throw new Error('Cliente de Supabase no inicializado');
+      }
 
-      console.time('createTables');
-      await this.createTables();
-      console.timeEnd('createTables');
+      // Probar conexión
+      await this.testConnection();
+      console.log('✅ Conexión a Supabase exitosa');
 
-      console.time('insertDefaultSettings');
-      await this.insertDefaultSettings();
-      console.timeEnd('insertDefaultSettings');
+      // Cargar cache offline
+      await this.loadOfflineCache();
+      console.log('✅ Cache offline cargado');
 
-      console.time('insertMockUsersIfNeeded');
-      await this.insertMockUsersIfNeeded();
-      console.timeEnd('insertMockUsersIfNeeded');
+      // Configurar realtime
+      await this.setupRealtimeSubscriptions();
+      console.log('✅ Subscripciones realtime configuradas');
 
-      console.log('✅ Base de datos SQLite inicializada correctamente');
+      // Sincronizar datos si estamos online
+      if (this.isOnline) {
+        await this.syncOfflineQueue();
+        await this.refreshCache();
+        console.log('✅ Sincronización inicial completada');
+      }
+
+      console.log('✅ DatabaseService inicializado con Supabase');
     } catch (error) {
-      console.error('❌ Error inicializando base de datos:', error);
-      throw error;
+      console.error('❌ Error inicializando DatabaseService:', error);
+      // En modo offline, continuar con cache local
+      console.log('⚠️ Continuando en modo offline');
     }
   }
 
-  // Crear tablas
-  private async createTables() {
-    if (!this.db) throw new Error('Base de datos no inicializada');
-    try {
-      await this.db.executeSql(`
-        CREATE TABLE IF NOT EXISTS vehicle_entries (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        plate_number TEXT NOT NULL,
-        entry_time TEXT NOT NULL,
-        exit_time TEXT,
-        duration INTEGER,
-        amount REAL,
-        status TEXT CHECK(status IN ('parked', 'exited')) DEFAULT 'parked',
-        confidence REAL,
-        operator_id INTEGER,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (operator_id) REFERENCES users(id)
-        );
-      `);
-
-      await this.db.executeSql(`
-        CREATE TABLE IF NOT EXISTS app_settings (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL,
-          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-      `);
-
-      try {
-        await this.db.executeSql(
-          `ALTER TABLE vehicle_entries ADD COLUMN operator_id INTEGER`,
-        );
-      } catch (e) {
-        console.warn('⚠️ La columna operator_id ya existe en vehicle_entries');
-      }
-
-      // Crear tabla users CON isActive desde el inicio
-      await this.db.executeSql(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        name TEXT NOT NULL,
-        role TEXT NOT NULL,
-        isActive INTEGER DEFAULT 1,
-        email TEXT,
-        phone TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-
-      await this.db.executeSql(`
-        CREATE INDEX IF NOT EXISTS idx_plate_number ON vehicle_entries(plate_number);
-      `);
-      await this.db.executeSql(`
-        CREATE INDEX IF NOT EXISTS idx_status ON vehicle_entries(status);
-      `);
-      await this.db.executeSql(`
-        CREATE INDEX IF NOT EXISTS idx_entry_time ON vehicle_entries(entry_time);
-      `);
-
-      try {
-        await this.db.executeSql(`ALTER TABLE users ADD COLUMN isActive INTEGER DEFAULT 1`);
-      } catch (e) {
-        // La columna ya existe
-      }
-
-      try {
-        await this.db.executeSql(`ALTER TABLE users ADD COLUMN email TEXT`);
-      } catch (e) {
-        // La columna ya existe
-      }
-
-      try {
-        await this.db.executeSql(`ALTER TABLE users ADD COLUMN phone TEXT`);
-      } catch (e) {
-        // La columna ya existe
-      }
-
-      await this.db.executeSql(`CREATE INDEX IF NOT EXISTS idx_plate_number ON vehicle_entries(plate_number);`);
-      await this.db.executeSql(`CREATE INDEX IF NOT EXISTS idx_status ON vehicle_entries(status);`);
-      await this.db.executeSql(`CREATE INDEX IF NOT EXISTS idx_entry_time ON vehicle_entries(entry_time);`);
-      await this.db.executeSql(`CREATE INDEX IF NOT EXISTS idx_operator_id ON vehicle_entries(operator_id);`);
-
-    } catch (error) {
-      console.error('❌ Error creando tablas:', error);
-      throw error;
-    }
-  }
-
-  // Insertar configuraciones por defecto solo si la tabla está vacía
-  public async insertDefaultSettings() {
-  if (!this.db) return;
-  const [result] = await this.db.executeSql(`SELECT COUNT(*) as count FROM app_settings`);
-  if (result.rows.item(0).count === 0) {
-    const defaultSettings = [
-      // Tarifas
-      { key: 'tariff_first_hour', value: '5.00' },
-      { key: 'tariff_additional_hour', value: '3.00' },
-      { key: 'tariff_max_daily', value: '25.00' },
-      { key: 'tariff_night_rate', value: '2.00' },
-      { key: 'tariff_weekend_multiplier', value: '1.2' },
-      
-      // Información del negocio
-      { key: 'business_name', value: 'AutoParking Control' },
-      { key: 'business_address', value: 'Av. Principal 123, Arequipa' },
-      { key: 'business_phone', value: '054-123456' },
-      { key: 'business_email', value: 'info@autoparking.com' },
-      { key: 'business_ruc', value: '20123456789' },
-      { key: 'business_max_spots', value: '50' },
-      
-      // Configuración del sistema
-      { key: 'system_auto_backup', value: 'true' },
-      { key: 'system_print_tickets', value: 'true' },
-      { key: 'system_use_ocr', value: 'true' },
-      { key: 'system_sound_alerts', value: 'true' },
-      { key: 'system_max_login_attempts', value: '3' },
-      { key: 'system_session_timeout', value: '30' },
-      { key: 'system_language', value: 'es' },
-      
-      // Configuraciones adicionales
-      { key: 'grace_period_minutes', value: '15' },
-      { key: 'app_version', value: '1.0.0' },
-      { key: 'last_backup', value: new Date().toISOString() },
-    ];
+  // ========================================
+  // FUNCIONES DE CONECTIVIDAD Y CACHE
+  // ========================================
+  private async testConnection(): Promise<void> {
+    const { data, error } = await this.supabase!
+      .from('app_settings')
+      .select('key')
+      .limit(1);
     
-    for (const setting of defaultSettings) {
+    if (error) throw error;
+    this.isOnline = true;
+  }
+
+  private setupNetworkListener() {
+    // En React Native, podrías usar @react-native-community/netinfo
+    // Por ahora, asumimos conexión disponible
+    this.isOnline = true;
+  }
+
+  private async loadOfflineCache() {
+    try {
+      const cached = await AsyncStorage.getItem('parking_cache');
+      if (cached) {
+        this.cache = JSON.parse(cached);
+      }
+    } catch (error) {
+      console.warn('⚠️ Error cargando cache offline:', error);
+    }
+  }
+
+  private async saveOfflineCache() {
+    try {
+      await AsyncStorage.setItem('parking_cache', JSON.stringify(this.cache));
+    } catch (error) {
+      console.warn('⚠️ Error guardando cache offline:', error);
+    }
+  }
+
+  // ========================================
+  // REALTIME SUBSCRIPTIONS
+  // ========================================
+  private async setupRealtimeSubscriptions() {
+    if (!this.supabase || !this.isOnline) return;
+
+    // Suscribirse a cambios en vehicle_entries
+    const vehicleChannel = this.supabase
+      .channel('vehicle_entries_changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'vehicle_entries',
+        },
+        (payload) => this.handleVehicleChange(payload)
+      )
+      .subscribe();
+
+    // Suscribirse a cambios en app_settings
+    const settingsChannel = this.supabase
+      .channel('settings_changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'app_settings',
+        },
+        (payload) => this.handleSettingsChange(payload)
+      )
+      .subscribe();
+
+    this.realtimeChannels = [vehicleChannel, settingsChannel];
+  }
+
+  private handleVehicleChange(payload: any) {
+    console.log('🔄 Cambio realtime en vehículos:', payload);
+    // Actualizar cache local
+    this.refreshActiveVehiclesCache();
+  }
+
+  private handleSettingsChange(payload: any) {
+    console.log('🔄 Cambio realtime en configuraciones:', payload);
+    // Actualizar cache de configuraciones
+    this.refreshSettingsCache();
+  }
+
+  // ========================================
+  // OPERACIONES OFFLINE
+  // ========================================
+  private async addToOfflineQueue(operation: any) {
+    this.offlineQueue.push({
+      ...operation,
+      timestamp: new Date().toISOString(),
+    });
+    
+    // Intentar sincronizar inmediatamente si estamos online
+    if (this.isOnline) {
+      await this.syncOfflineQueue();
+    }
+  }
+
+  private async syncOfflineQueue() {
+    if (!this.isOnline || this.offlineQueue.length === 0) return;
+
+    console.log(`🔄 Sincronizando ${this.offlineQueue.length} operaciones offline...`);
+    
+    for (const operation of this.offlineQueue) {
       try {
-        await this.db.executeSql(
-          'INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)',
-          [setting.key, setting.value]
-        );
+        await this.executeOfflineOperation(operation);
       } catch (error) {
-        console.warn('Warning: Error insertando configuración por defecto:', error);
+        console.error('❌ Error sincronizando operación:', operation, error);
       }
     }
-    console.log('✅ Configuraciones por defecto insertadas');
+    
+    this.offlineQueue = [];
+    console.log('✅ Cola offline sincronizada');
   }
-}
 
-
-  // Solo inserta usuarios mock si la tabla está vacía
-  async insertMockUsersIfNeeded() {
-    if (!this.db) throw new Error('Base de datos no inicializada');
-    const [result] = await this.db.executeSql(
-      `SELECT COUNT(*) as count FROM users`,
-    );
-    if (result.rows.item(0).count === 0) {
-      await this.db.executeSql(
-        `INSERT INTO users (username, password, name, role) VALUES 
-          ('admin', 'admin123', 'Administrador', 'admin'),
-          ('operador', 'operador123', 'Operador', 'operador')`,
-      );
+  private async executeOfflineOperation(operation: any) {
+    switch (operation.type) {
+      case 'registerEntry':
+        await this.registerEntry(operation.plateNumber, operation.operatorId, operation.confidence);
+        break;
+      case 'processExit':
+        await this.processExit(operation.plateNumber);
+        break;
+      case 'setSetting':
+        await this.setSetting(operation.key, operation.value);
+        break;
+      // Agregar más operaciones según sea necesario
     }
   }
+
+  // ========================================
+  // FUNCIONES PRINCIPALES (API compatible con SQLite)
+  // ========================================
 
   // Registrar entrada de vehículo
   async registerEntry(
@@ -221,16 +235,39 @@ class DatabaseService {
     confidence?: number,
   ): Promise<number> {
     try {
+      if (!this.isOnline) {
+        // Modo offline: agregar a cola
+        await this.addToOfflineQueue({
+          type: 'registerEntry',
+          plateNumber,
+          operatorId,
+          confidence,
+        });
+        
+        // Simular ID local para respuesta inmediata
+        return Date.now();
+      }
+
       const entryTime = new Date().toISOString();
-      if (!this.db) throw new Error('Base de datos no inicializada');
-      const results = await this.db.executeSql(
-        `INSERT INTO vehicle_entries 
-       (plate_number, entry_time, status, confidence, operator_id) 
-       VALUES (?, ?, 'parked', ?, ?)`,
-        [plateNumber, entryTime, confidence || 0, operatorId || null],
-      );
+      const { data, error } = await this.supabase!
+        .from('vehicle_entries')
+        .insert([
+          {
+            plate_number: plateNumber,
+            entry_time: entryTime,
+            status: 'parked',
+            confidence: confidence || 0,
+            operator_id: operatorId || null,
+          },
+        ])
+        .select('id')
+        .single();
+
+      if (error) throw error;
+
       console.log('✅ Vehículo registrado:', plateNumber);
-      return results[0].insertId;
+      await this.refreshActiveVehiclesCache();
+      return data.id;
     } catch (error) {
       console.error('❌ Error registrando entrada:', error);
       throw new Error('No se pudo registrar la entrada del vehículo');
@@ -240,39 +277,63 @@ class DatabaseService {
   // Procesar salida de vehículo
   async processExit(plateNumber: string): Promise<VehicleEntry | null> {
     try {
+      if (!this.isOnline) {
+        // En modo offline, usar cache local
+        await this.addToOfflineQueue({
+          type: 'processExit',
+          plateNumber,
+        });
+        return null; // No podemos procesar offline sin conexión
+      }
+
       const vehicle = await this.getActiveVehicle(plateNumber);
       if (!vehicle) {
         throw new Error('Vehículo no encontrado o ya procesado');
       }
+
       const exitTime = new Date().toISOString();
       const entryDate = new Date(vehicle.entryTime);
       const exitDate = new Date(exitTime);
       const duration = Math.ceil(
         (exitDate.getTime() - entryDate.getTime()) / (1000 * 60),
-      ); // minutos
-      const hourlyRate =
-        parseFloat(await this.getSetting('hourly_rate')) || 2.0;
-      const hours = Math.ceil(duration / 60);
-      const amount = hours * hourlyRate;
-
-      if (!this.db) throw new Error('Base de datos no inicializada');
-      if (typeof vehicle.id !== 'number') {
-        throw new Error('El vehículo no tiene un ID válido');
-      }
-      await this.db.executeSql(
-        `UPDATE vehicle_entries 
-         SET exit_time = ?, duration = ?, amount = ?, status = 'exited' 
-         WHERE id = ?`,
-        [exitTime, duration, amount, vehicle.id],
       );
+
+      // Obtener tarifa
+      const hourlyRate = parseFloat(await this.getSetting('tariff_first_hour')) || 5.0;
+      const additionalRate = parseFloat(await this.getSetting('tariff_additional_hour')) || 3.0;
+      
+      let amount = hourlyRate;
+      if (duration > 60) {
+        const additionalHours = Math.ceil((duration - 60) / 60);
+        amount += additionalHours * additionalRate;
+      }
+
+      const { data, error } = await this.supabase!
+        .from('vehicle_entries')
+        .update({
+          exit_time: exitTime,
+          duration: duration,
+          amount: amount,
+          status: 'exited',
+        })
+        .eq('id', vehicle.id)
+        .select()
+        .single();
+
+      if (error) throw error;
+
       console.log('✅ Salida procesada:', plateNumber, 'Monto:', amount);
+      await this.refreshActiveVehiclesCache();
 
       return {
-        ...vehicle,
-        exitTime,
-        duration,
-        amount,
-        status: 'exited',
+        id: data.id,
+        plateNumber: data.plate_number,
+        entryTime: data.entry_time,
+        exitTime: data.exit_time,
+        duration: data.duration,
+        amount: data.amount,
+        status: data.status,
+        confidence: data.confidence,
       };
     } catch (error) {
       console.error('❌ Error procesando salida:', error);
@@ -283,24 +344,35 @@ class DatabaseService {
   // Obtener vehículo activo por placa
   async getActiveVehicle(plateNumber: string): Promise<VehicleEntry | null> {
     try {
-      if (!this.db) throw new Error('Base de datos no inicializada');
-      const results = await this.db.executeSql(
-        `SELECT * FROM vehicle_entries 
-         WHERE plate_number = ? AND status = 'parked' 
-         ORDER BY entry_time DESC LIMIT 1`,
-        [plateNumber],
-      );
-      if (results[0].rows.length === 0) return null;
-      const row = results[0].rows.item(0);
+      if (!this.isOnline) {
+        // Buscar en cache offline
+        const cached = this.cache.activeVehicles.find(
+          v => v.plateNumber === plateNumber && v.status === 'parked'
+        );
+        return cached || null;
+      }
+
+      const { data, error } = await this.supabase!
+        .from('vehicle_entries')
+        .select('*')
+        .eq('plate_number', plateNumber)
+        .eq('status', 'parked')
+        .order('entry_time', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (error && error.code !== 'PGRST116') throw error;
+      if (!data) return null;
+
       return {
-        id: row.id,
-        plateNumber: row.plate_number,
-        entryTime: row.entry_time,
-        exitTime: row.exit_time,
-        duration: row.duration,
-        amount: row.amount,
-        status: row.status,
-        confidence: row.confidence,
+        id: data.id,
+        plateNumber: data.plate_number,
+        entryTime: data.entry_time,
+        exitTime: data.exit_time,
+        duration: data.duration,
+        amount: data.amount,
+        status: data.status,
+        confidence: data.confidence,
       };
     } catch (error) {
       console.error('❌ Error obteniendo vehículo:', error);
@@ -311,30 +383,38 @@ class DatabaseService {
   // Obtener todos los vehículos activos
   async getActiveVehicles(): Promise<VehicleEntry[]> {
     try {
-      if (!this.db) throw new Error('Base de datos no inicializada');
-      const results = await this.db.executeSql(
-        `SELECT * FROM vehicle_entries 
-         WHERE status = 'parked' 
-         ORDER BY entry_time DESC`,
-      );
-      const vehicles: VehicleEntry[] = [];
-      for (let i = 0; i < results[0].rows.length; i++) {
-        const row = results[0].rows.item(i);
-        vehicles.push({
-          id: row.id,
-          plateNumber: row.plate_number,
-          entryTime: row.entry_time,
-          exitTime: row.exit_time,
-          duration: row.duration,
-          amount: row.amount,
-          status: row.status,
-          confidence: row.confidence,
-        });
+      if (!this.isOnline) {
+        // Retornar cache offline
+        return this.cache.activeVehicles.filter(v => v.status === 'parked');
       }
+
+      const { data, error } = await this.supabase!
+        .from('vehicle_entries')
+        .select('*')
+        .eq('status', 'parked')
+        .order('entry_time', { ascending: false });
+
+      if (error) throw error;
+
+      const vehicles = data.map(row => ({
+        id: row.id,
+        plateNumber: row.plate_number,
+        entryTime: row.entry_time,
+        exitTime: row.exit_time,
+        duration: row.duration,
+        amount: row.amount,
+        status: row.status,
+        confidence: row.confidence,
+      }));
+
+      // Actualizar cache
+      this.cache.activeVehicles = vehicles;
+      await this.saveOfflineCache();
+
       return vehicles;
     } catch (error) {
       console.error('❌ Error obteniendo vehículos activos:', error);
-      return [];
+      return this.cache.activeVehicles.filter(v => v.status === 'parked');
     }
   }
 
@@ -342,23 +422,53 @@ class DatabaseService {
   async getDailySummary(date?: string): Promise<DailySummary> {
     try {
       const targetDate = date || new Date().toISOString().split('T')[0];
-      if (!this.db) throw new Error('Base de datos no inicializada');
-      const results = await this.db.executeSql(
-        `SELECT 
-           COUNT(*) as total_vehicles,
-           SUM(CASE WHEN status = 'parked' THEN 1 ELSE 0 END) as vehicles_parked,
-           COALESCE(SUM(amount), 0) as total_earnings,
-           COALESCE(AVG(duration), 0) as average_stay
-         FROM vehicle_entries 
-         WHERE DATE(entry_time) = ?`,
-        [targetDate],
+
+      if (!this.isOnline) {
+        // Calcular desde cache offline (aproximado)
+        const cachedVehicles = this.cache.activeVehicles;
+        return {
+          totalVehicles: cachedVehicles.length,
+          vehiclesParked: cachedVehicles.filter(v => v.status === 'parked').length,
+          totalEarnings: cachedVehicles.reduce((sum, v) => sum + (v.amount || 0), 0),
+          averageStay: 0, // Difícil calcular offline
+        };
+      }
+
+      const { data, error } = await this.supabase!
+        .from('vehicle_entries')
+        .select('status, amount, duration')
+        .gte('entry_time', `${targetDate}T00:00:00`)
+        .lt('entry_time', `${targetDate}T23:59:59`);
+
+      if (error) throw error;
+
+      const summary = data.reduce(
+        (acc, row) => {
+          acc.totalVehicles++;
+          if (row.status === 'parked') acc.vehiclesParked++;
+          if (row.amount) acc.totalEarnings += parseFloat(row.amount);
+          if (row.duration) {
+            acc.totalDuration += row.duration;
+            acc.countWithDuration++;
+          }
+          return acc;
+        },
+        {
+          totalVehicles: 0,
+          vehiclesParked: 0,
+          totalEarnings: 0,
+          totalDuration: 0,
+          countWithDuration: 0,
+        }
       );
-      const row = results[0].rows.item(0);
+
       return {
-        totalVehicles: row.total_vehicles || 0,
-        vehiclesParked: row.vehicles_parked || 0,
-        totalEarnings: row.total_earnings || 0,
-        averageStay: row.average_stay || 0,
+        totalVehicles: summary.totalVehicles,
+        vehiclesParked: summary.vehiclesParked,
+        totalEarnings: summary.totalEarnings,
+        averageStay: summary.countWithDuration > 0 
+          ? summary.totalDuration / summary.countWithDuration 
+          : 0,
       };
     } catch (error) {
       console.error('❌ Error obteniendo resumen diario:', error);
@@ -374,309 +484,417 @@ class DatabaseService {
   // Obtener configuración
   async getSetting(key: string): Promise<string> {
     try {
-      if (!this.db) throw new Error('Base de datos no inicializada');
-      const results = await this.db.executeSql(
-        'SELECT value FROM app_settings WHERE key = ?',
-        [key],
-      );
-      if (results[0].rows.length === 0) return '';
-      return results[0].rows.item(0).value || '';
+      if (!this.isOnline && this.cache.settings[key]) {
+        return this.cache.settings[key];
+      }
+
+      const { data, error } = await this.supabase!
+        .from('app_settings')
+        .select('value')
+        .eq('key', key)
+        .single();
+
+      if (error && error.code !== 'PGRST116') throw error;
+      
+      const value = data?.value || '';
+      
+      // Actualizar cache
+      this.cache.settings[key] = value;
+      await this.saveOfflineCache();
+      
+      return value;
     } catch (error) {
       console.error('❌ Error obteniendo configuración:', error);
-      return '';
+      return this.cache.settings[key] || '';
     }
   }
 
   // Guardar configuración
   async setSetting(key: string, value: string): Promise<void> {
     try {
-      if (!this.db) throw new Error('Base de datos no inicializada');
-      await this.db.executeSql(
-        'INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
-        [key, value, new Date().toISOString()],
-      );
+      if (!this.isOnline) {
+        // Modo offline: agregar a cola
+        await this.addToOfflineQueue({
+          type: 'setSetting',
+          key,
+          value,
+        });
+        
+        // Actualizar cache local
+        this.cache.settings[key] = value;
+        await this.saveOfflineCache();
+        return;
+      }
+
+      const { error } = await this.supabase!
+        .from('app_settings')
+        .upsert([
+          {
+            key,
+            value,
+            updated_at: new Date().toISOString(),
+          },
+        ]);
+
+      if (error) throw error;
+
+      // Actualizar cache
+      this.cache.settings[key] = value;
+      await this.saveOfflineCache();
     } catch (error) {
       console.error('❌ Error guardando configuración:', error);
       throw error;
     }
   }
 
-  // Cerrar conexión de base de datos
-  async closeDatabase(): Promise<void> {
-    try {
-      if (this.db) {
-        await this.db.close();
-        this.db = null;
-        console.log('✅ Base de datos cerrada correctamente');
-      }
-    } catch (error) {
-      console.error('❌ Error cerrando base de datos:', error);
-    }
-  }
-
-  // Obtener usuario
+  // Obtener usuario (para login)
   async getUser(username: string, password: string) {
     try {
-      if (!this.db) throw new Error('Base de datos no inicializada');
-      const [result] = await this.db.executeSql(
-        `SELECT username, name, role FROM users WHERE username = ? AND password = ? LIMIT 1`,
-        [username, password],
-      );
-      if (result.rows.length > 0) {
-        return result.rows.item(0);
-      }
-      return null;
+      const { data, error } = await this.supabase!
+        .from('users')
+        .select('username, name, role')
+        .eq('username', username)
+        .eq('password', password)
+        .eq('is_active', 1)
+        .single();
+
+      if (error && error.code !== 'PGRST116') throw error;
+      return data;
     } catch (error) {
       console.error('❌ Error en getUser:', error);
       return null;
     }
   }
 
+  // ========================================
+  // FUNCIONES DE ADMINISTRACIÓN
+  // ========================================
+
   async getReports({ operatorId = 'all', startDate = '', endDate = '' } = {}) {
-    if (!this.db) throw new Error('Base de datos no inicializada');
-    let query = `
-    SELECT ve.*, u.name as operatorName
-    FROM vehicle_entries ve
-    LEFT JOIN users u ON ve.operator_id = u.id
-    WHERE 1=1
-  `;
-    const params: any[] = [];
+    try {
+      let query = this.supabase!
+        .from('vehicle_entries')
+        .select(`
+          *,
+          users(name)
+        `)
+        .order('entry_time', { ascending: false });
 
-    if (operatorId !== 'all') {
-      query += ' AND ve.operator_id = ?';
-      params.push(operatorId);
-    }
-    if (startDate) {
-      query += ' AND DATE(ve.entry_time) >= ?';
-      params.push(startDate);
-    }
-    if (endDate) {
-      query += ' AND DATE(ve.entry_time) <= ?';
-      params.push(endDate);
-    }
-    query += ' ORDER BY ve.entry_time DESC';
+      if (operatorId !== 'all') {
+        query = query.eq('operator_id', operatorId);
+      }
+      if (startDate) {
+        query = query.gte('entry_time', `${startDate}T00:00:00`);
+      }
+      if (endDate) {
+        query = query.lte('entry_time', `${endDate}T23:59:59`);
+      }
 
-    const results = await this.db.executeSql(query, params);
-    const reports: any[] = [];
-    for (let i = 0; i < results[0].rows.length; i++) {
-      const row = results[0].rows.item(i);
-      reports.push({
+      const { data, error } = await query;
+      if (error) throw error;
+
+      return data.map(row => ({
         id: row.id,
         plateNumber: row.plate_number,
-        operatorName: row.operatorName || 'Sistema',
+        operatorName: row.users?.name || 'Sistema',
         entryTime: new Date(row.entry_time).toLocaleString('es-PE'),
-        exitTime: row.exit_time
-          ? new Date(row.exit_time).toLocaleString('es-PE')
+        exitTime: row.exit_time 
+          ? new Date(row.exit_time).toLocaleString('es-PE') 
           : null,
-        duration: row.duration
-          ? `${Math.floor(row.duration / 60)}h ${row.duration % 60}m`
+        duration: row.duration 
+          ? `${Math.floor(row.duration / 60)}h ${row.duration % 60}m` 
           : null,
         amount: row.amount || 0,
         status: row.status === 'exited' ? 'completed' : 'active',
-      });
+      }));
+    } catch (error) {
+      console.error('❌ Error obteniendo reportes:', error);
+      return [];
     }
-    return reports;
   }
 
   async getOperators() {
-  if (!this.db) throw new Error('Base de datos no inicializada');
-  try {
-    const [result] = await this.db.executeSql(`
-      SELECT 
-        u.*,
-        COALESCE(stats.totalVehicles, 0) as totalVehiclesProcessed,
-        COALESCE(stats.totalEarnings, 0) as totalEarnings
-      FROM users u
-      LEFT JOIN (
-        SELECT 
-          operator_id,
-          COUNT(*) as totalVehicles,
-          SUM(COALESCE(amount, 0)) as totalEarnings
-        FROM vehicle_entries 
-        WHERE status = 'exited' AND operator_id IS NOT NULL
-        GROUP BY operator_id
-      ) stats ON u.id = stats.operator_id
-      WHERE u.role = 'operador'
-      ORDER BY u.name
-    `);
-    
-    const operators: any[] = [];
-    for (let i = 0; i < result.rows.length; i++) {
-      const row = result.rows.item(i);
-      operators.push({
-        id: row.id.toString(),
-        username: row.username,
-        name: row.name,
-        email: row.email || '',
-        phone: row.phone || '',
-        isActive: Boolean(row.isActive),
-        totalVehiclesProcessed: row.totalVehiclesProcessed || 0,
-        totalEarnings: parseFloat(row.totalEarnings || '0'),
-        lastLogin: null // Por ahora null, puedes implementar tracking más tarde
-      });
+    try {
+      const { data, error } = await this.supabase!
+        .from('users')
+        .select('*')
+        .eq('role', 'operador')
+        .order('name');
+
+      if (error) throw error;
+
+      // Obtener estadísticas de cada operador
+      const operators = await Promise.all(
+        data.map(async (user) => {
+          const { data: stats } = await this.supabase!
+            .from('vehicle_entries')
+            .select('amount')
+            .eq('operator_id', user.id)
+            .eq('status', 'exited');
+
+          const totalVehicles = stats?.length || 0;
+          const totalEarnings = stats?.reduce((sum, entry) => sum + (parseFloat(entry.amount) || 0), 0) || 0;
+
+          return {
+            id: user.id.toString(),
+            username: user.username,
+            name: user.name,
+            email: user.email || '',
+            phone: user.phone || '',
+            isActive: Boolean(user.is_active),
+            totalVehiclesProcessed: totalVehicles,
+            totalEarnings: totalEarnings,
+            lastLogin: null,
+          };
+        })
+      );
+
+      return operators;
+    } catch (error) {
+      console.error('❌ Error obteniendo operadores:', error);
+      return [];
     }
-    return operators;
-  } catch (error: any) {
-    console.error('❌ Error obteniendo operadores:', error);
-    return [];
   }
-}
 
   async addOperator(operator: any) {
-  if (!this.db) throw new Error('Base de datos no inicializada');
-  try {
-    await this.db.executeSql(
-      `INSERT INTO users (username, password, name, role, email, phone, isActive) 
-       VALUES (?, ?, ?, 'operador', ?, ?, 1)`,
-      [
-        operator.username, 
-        operator.password || 'operador123', 
-        operator.name,
-        operator.email || '',
-        operator.phone || ''
-      ]
-    );
-    console.log('✅ Operador agregado:', operator.name);
-  } catch (error) {
-    console.error('❌ Error agregando operador:', error);
-    throw error;
-  }
-}
-
-async updateOperator(operator: any) {
-  if (!this.db) throw new Error('Base de datos no inicializada');
-  try {
-    await this.db.executeSql(
-      `UPDATE users 
-       SET name = ?, username = ?, email = ?, phone = ? 
-       WHERE id = ?`,
-      [operator.name, operator.username, operator.email || '', operator.phone || '', operator.id]
-    );
-    console.log('✅ Operador actualizado:', operator.name);
-  } catch (error) {
-    console.error('❌ Error actualizando operador:', error);
-    throw error;
-  }
-}
-
-async setOperatorStatus(operatorId: string, isActive: boolean) {
-  if (!this.db) throw new Error('Base de datos no inicializada');
-  try {
-    await this.db.executeSql(
-      `UPDATE users SET isActive = ? WHERE id = ?`,
-      [isActive ? 1 : 0, operatorId]
-    );
-    console.log(`✅ Estado del operador ${operatorId} cambiado a:`, isActive);
-  } catch (error) {
-    console.error('❌ Error cambiando estado del operador:', error);
-    throw error;
-  }
-}
-
-async getSettings(keys: string[]): Promise<Record<string, string>> {
-  try {
-    if (!this.db) throw new Error('Base de datos no inicializada');
-    
-    const placeholders = keys.map(() => '?').join(',');
-    const results = await this.db.executeSql(
-      `SELECT key, value FROM app_settings WHERE key IN (${placeholders})`,
-      keys
-    );
-    
-    const settings: Record<string, string> = {};
-    for (let i = 0; i < results[0].rows.length; i++) {
-      const row = results[0].rows.item(i);
-      settings[row.key] = row.value;
-    }
-    
-    return settings;
-  } catch (error) {
-    console.error('❌ Error obteniendo configuraciones:', error);
-    return {};
-  }
-}
-
-async saveSettings(settings: Record<string, string>): Promise<void> {
-  try {
-    if (!this.db) throw new Error('Base de datos no inicializada');
-    
-    for (const [key, value] of Object.entries(settings)) {
-      await this.db.executeSql(
-        'INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
-        [key, value, new Date().toISOString()]
-      );
-    }
-    console.log('✅ Configuraciones guardadas:', Object.keys(settings));
-  } catch (error) {
-    console.error('❌ Error guardando configuraciones:', error);
-    throw error;
-  }
-}
-
-async getAllSettings(): Promise<{
-  tariffs: any;
-  businessInfo: any;
-  systemConfig: any;
-}> {
-  try {
-    if (!this.db) throw new Error('Base de datos no inicializada');
-    
-    const [result] = await this.db.executeSql('SELECT key, value FROM app_settings');
-    const settings: Record<string, string> = {};
-    
-    for (let i = 0; i < result.rows.length; i++) {
-      const row = result.rows.item(i);
-      settings[row.key] = row.value;
-    }
-
-    return {
-      tariffs: {
-        firstHour: parseFloat(settings.tariff_first_hour || '5.00'),
-        additionalHour: parseFloat(settings.tariff_additional_hour || '3.00'),
-        maxDailyRate: parseFloat(settings.tariff_max_daily || '25.00'),
-        nightRate: parseFloat(settings.tariff_night_rate || '2.00'),
-        weekendMultiplier: parseFloat(settings.tariff_weekend_multiplier || '1.2'),
-      },
-      businessInfo: {
-        name: settings.business_name || 'AutoParking Control',
-        address: settings.business_address || 'Av. Principal 123, Arequipa',
-        phone: settings.business_phone || '054-123456',
-        email: settings.business_email || 'info@autoparking.com',
-        ruc: settings.business_ruc || '20123456789',
-        maxSpots: parseInt(settings.business_max_spots || '50'),
-      },
-      systemConfig: {
-        autoBackup: settings.system_auto_backup === 'true',
-        printTickets: settings.system_print_tickets === 'true',
-        useOCR: settings.system_use_ocr === 'true',
-        soundAlerts: settings.system_sound_alerts === 'true',
-        maxLoginAttempts: parseInt(settings.system_max_login_attempts || '3'),
-        sessionTimeout: parseInt(settings.system_session_timeout || '30'),
-        language: settings.system_language || 'es',
-      }
-    };
-  } catch (error) {
-    console.error('❌ Error obteniendo todas las configuraciones:', error);
-    return {
-      tariffs: { firstHour: 5.00, additionalHour: 3.00, maxDailyRate: 25.00, nightRate: 2.00, weekendMultiplier: 1.2 },
-      businessInfo: { name: 'AutoParking Control', address: 'Av. Principal 123, Arequipa', phone: '054-123456', email: 'info@autoparking.com', ruc: '20123456789', maxSpots: 50 },
-      systemConfig: { autoBackup: true, printTickets: true, useOCR: true, soundAlerts: true, maxLoginAttempts: 3, sessionTimeout: 30, language: 'es' }
-    };
-  }
-}
-
-async deleteAllSettings(): Promise<void> {
     try {
-      if (!this.db) throw new Error('Base de datos no inicializada');
-      await this.db.executeSql('DELETE FROM app_settings');
-      console.log('✅ Todas las configuraciones han sido eliminadas');
+      const { error } = await this.supabase!
+        .from('users')
+        .insert([
+          {
+            username: operator.username,
+            password: operator.password || 'operador123',
+            name: operator.name,
+            role: 'operador',
+            email: operator.email || '',
+            phone: operator.phone || '',
+            is_active: 1,
+          },
+        ]);
+
+      if (error) throw error;
+      console.log('✅ Operador agregado:', operator.name);
     } catch (error) {
-      console.error('❌ Error eliminando todas las configuraciones:', error);
+      console.error('❌ Error agregando operador:', error);
       throw error;
     }
-}
+  }
 
-}
+  async updateOperator(operator: any) {
+    try {
+      const { error } = await this.supabase!
+        .from('users')
+        .update({
+          name: operator.name,
+          username: operator.username,
+          email: operator.email || '',
+          phone: operator.phone || '',
+        })
+        .eq('id', operator.id);
 
+      if (error) throw error;
+      console.log('✅ Operador actualizado:', operator.name);
+    } catch (error) {
+      console.error('❌ Error actualizando operador:', error);
+      throw error;
+    }
+  }
+
+  async setOperatorStatus(operatorId: string, isActive: boolean) {
+    try {
+      const { error } = await this.supabase!
+        .from('users')
+        .update({ is_active: isActive ? 1 : 0 })
+        .eq('id', operatorId);
+
+      if (error) throw error;
+      console.log(`✅ Estado del operador ${operatorId} cambiado a:`, isActive);
+    } catch (error) {
+      console.error('❌ Error cambiando estado del operador:', error);
+      throw error;
+    }
+  }
+
+  // Funciones de configuraciones múltiples
+  async getSettings(keys: string[]): Promise<Record<string, string>> {
+    try {
+      const { data, error } = await this.supabase!
+        .from('app_settings')
+        .select('key, value')
+        .in('key', keys);
+
+      if (error) throw error;
+
+      const settings: Record<string, string> = {};
+      data.forEach(row => {
+        settings[row.key] = row.value;
+      });
+
+      return settings;
+    } catch (error) {
+      console.error('❌ Error obteniendo configuraciones:', error);
+      return {};
+    }
+  }
+
+  async saveSettings(settings: Record<string, string>): Promise<void> {
+    try {
+      const settingsArray = Object.entries(settings).map(([key, value]) => ({
+        key,
+        value,
+        updated_at: new Date().toISOString(),
+      }));
+
+      const { error } = await this.supabase!
+        .from('app_settings')
+        .upsert(settingsArray);
+
+      if (error) throw error;
+
+      // Actualizar cache
+      Object.assign(this.cache.settings, settings);
+      await this.saveOfflineCache();
+
+      console.log('✅ Configuraciones guardadas:', Object.keys(settings));
+    } catch (error) {
+      console.error('❌ Error guardando configuraciones:', error);
+      throw error;
+    }
+  }
+
+  async getAllSettings(): Promise<{
+    tariffs: any;
+    businessInfo: any;
+    systemConfig: any;
+  }> {
+    try {
+      const { data, error } = await this.supabase!
+        .from('app_settings')
+        .select('key, value');
+
+      if (error) throw error;
+
+      const settings: Record<string, string> = {};
+      data.forEach(row => {
+        settings[row.key] = row.value;
+      });
+
+      // Actualizar cache
+      this.cache.settings = settings;
+      await this.saveOfflineCache();
+
+      return {
+        tariffs: {
+          firstHour: parseFloat(settings.tariff_first_hour || '5.00'),
+          additionalHour: parseFloat(settings.tariff_additional_hour || '3.00'),
+          maxDailyRate: parseFloat(settings.tariff_max_daily || '25.00'),
+          nightRate: parseFloat(settings.tariff_night_rate || '2.00'),
+          weekendMultiplier: parseFloat(settings.tariff_weekend_multiplier || '1.2'),
+        },
+        businessInfo: {
+          name: settings.business_name || 'AutoParking Control',
+          address: settings.business_address || 'Av. Principal 123, Arequipa',
+          phone: settings.business_phone || '054-123456',
+          email: settings.business_email || 'info@autoparking.com',
+          ruc: settings.business_ruc || '20123456789',
+          maxSpots: parseInt(settings.business_max_spots || '50'),
+        },
+        systemConfig: {
+          autoBackup: settings.system_auto_backup === 'true',
+          printTickets: settings.system_print_tickets === 'true',
+          useOCR: settings.system_use_ocr === 'true',
+          soundAlerts: settings.system_sound_alerts === 'true',
+          maxLoginAttempts: parseInt(settings.system_max_login_attempts || '3'),
+          sessionTimeout: parseInt(settings.system_session_timeout || '30'),
+          language: settings.system_language || 'es',
+        }
+      };
+    } catch (error) {
+      console.error('❌ Error obteniendo todas las configuraciones:', error);
+      
+      // Fallback a valores por defecto
+      return {
+        tariffs: { firstHour: 5.00, additionalHour: 3.00, maxDailyRate: 25.00, nightRate: 2.00, weekendMultiplier: 1.2 },
+        businessInfo: { name: 'AutoParking Control', address: 'Av. Principal 123, Arequipa', phone: '054-123456', email: 'info@autoparking.com', ruc: '20123456789', maxSpots: 50 },
+        systemConfig: { autoBackup: true, printTickets: true, useOCR: true, soundAlerts: true, maxLoginAttempts: 3, sessionTimeout: 30, language: 'es' }
+      };
+    }
+  }
+
+  // ========================================
+  // FUNCIONES DE CACHE Y SINCRONIZACIÓN
+  // ========================================
+  
+  private async refreshCache() {
+    await Promise.all([
+      this.refreshActiveVehiclesCache(),
+      this.refreshSettingsCache(),
+    ]);
+  }
+
+  private async refreshActiveVehiclesCache() {
+    try {
+      const vehicles = await this.getActiveVehicles();
+      this.cache.activeVehicles = vehicles;
+      await this.saveOfflineCache();
+    } catch (error) {
+      console.warn('⚠️ Error refrescando cache de vehículos:', error);
+    }
+  }
+
+  private async refreshSettingsCache() {
+    try {
+      const { data, error } = await this.supabase!
+        .from('app_settings')
+        .select('key, value');
+
+      if (error) throw error;
+
+      const settings: Record<string, string> = {};
+      data.forEach(row => {
+        settings[row.key] = row.value;
+      });
+
+      this.cache.settings = settings;
+      await this.saveOfflineCache();
+    } catch (error) {
+      console.warn('⚠️ Error refrescando cache de configuraciones:', error);
+    }
+  }
+
+  // ========================================
+  // LIMPIEZA Y CONEXIÓN
+  // ========================================
+  
+  async closeDatabase(): Promise<void> {
+    try {
+      // Cerrar subscripciones realtime
+      this.realtimeChannels.forEach(channel => {
+        this.supabase?.removeChannel(channel);
+      });
+      this.realtimeChannels = [];
+
+      // Sincronizar cola offline antes de cerrar
+      await this.syncOfflineQueue();
+
+      console.log('✅ DatabaseService cerrado correctamente');
+    } catch (error) {
+      console.error('❌ Error cerrando DatabaseService:', error);
+    }
+  }
+
+  // Función de utilidad para comprobar conectividad
+  public isConnected(): boolean {
+    return this.isOnline;
+  }
+
+  // Función para forzar sincronización
+  public async forcSync(): Promise<void> {
+    if (this.isOnline) {
+      await this.syncOfflineQueue();
+      await this.refreshCache();
+    }
+  }
+}
 
 export const databaseService = new DatabaseService();

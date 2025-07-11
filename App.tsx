@@ -8,7 +8,8 @@ import {
   View,
   Text,
   Animated,
-  Easing
+  Easing,
+  TouchableOpacity
 } from 'react-native';
 import OperatorScreen from './android/app/src/main/java/com/parkingcarapp/screens/OperatorScreen';
 import AdminScreen from './android/app/src/main/java/com/parkingcarapp/screens/AdminScreen';
@@ -19,9 +20,22 @@ import SystemSettingsScreen from './android/app/src/main/java/com/parkingcarapp/
 import { databaseService } from './android/app/src/main/java/com/parkingcarapp/services/databaseService';
 
 type AdminScreenType = 'main' | 'reports' | 'operators' | 'settings';
+type AppState = 'loading' | 'ready' | 'error';
 
-// ⬇️ COMPONENTE LOADING MEJORADO
-function LoadingScreen({ isDarkMode }: { isDarkMode: boolean }) {
+// ⬇️ COMPONENTE LOADING MEJORADO CON ESTADOS + CONECTIVIDAD
+function LoadingScreen({ 
+  isDarkMode, 
+  initProgress, 
+  error, 
+  onRetry,
+  isOfflineMode = false
+}: { 
+  isDarkMode: boolean;
+  initProgress: string;
+  error: string | null;
+  onRetry: () => void;
+  isOfflineMode?: boolean;
+}) {
   const spinValue = React.useRef(new Animated.Value(0)).current;
   const scaleValue = React.useRef(new Animated.Value(0.8)).current;
   const opacityValue = React.useRef(new Animated.Value(0)).current;
@@ -42,19 +56,20 @@ function LoadingScreen({ isDarkMode }: { isDarkMode: boolean }) {
       }),
     ]).start();
 
-    // Animación de rotación continua
-    const spinAnimation = Animated.loop(
-      Animated.timing(spinValue, {
-        toValue: 1,
-        duration: 2000,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      })
-    );
-    spinAnimation.start();
-
-    return () => spinAnimation.stop();
-  }, []);
+    // Animación de rotación continua (solo si no hay error)
+    if (!error) {
+      const spinAnimation = Animated.loop(
+        Animated.timing(spinValue, {
+          toValue: 1,
+          duration: 2000,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        })
+      );
+      spinAnimation.start();
+      return () => spinAnimation.stop();
+    }
+  }, [error]);
 
   const spin = spinValue.interpolate({
     inputRange: [0, 1],
@@ -64,18 +79,24 @@ function LoadingScreen({ isDarkMode }: { isDarkMode: boolean }) {
   const dynamicStyles = StyleSheet.create({
     container: {
       backgroundColor: isDarkMode 
-        ? 'linear-gradient(135deg, #1e3c72 0%, #2a5298 100%)' 
-        : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+        ? (error ? '#4a1a1a' : isOfflineMode ? '#2d4a22' : '#1e3c72')
+        : (error ? '#ffeaea' : isOfflineMode ? '#e8f5e8' : '#667eea'),
     },
     loadingContent: {
-      backgroundColor: isDarkMode ? 'rgba(30, 60, 114, 0.9)' : 'rgba(255, 255, 255, 0.95)',
-      shadowColor: isDarkMode ? '#000' : '#667eea',
+      backgroundColor: isDarkMode 
+        ? (error ? 'rgba(139, 69, 19, 0.9)' : isOfflineMode ? 'rgba(45, 74, 34, 0.9)' : 'rgba(30, 60, 114, 0.9)')
+        : (error ? 'rgba(255, 235, 235, 0.95)' : isOfflineMode ? 'rgba(232, 245, 232, 0.95)' : 'rgba(255, 255, 255, 0.95)'),
+      shadowColor: isDarkMode ? '#000' : (error ? '#d32f2f' : isOfflineMode ? '#2E7D32' : '#667eea'),
     },
     loadingText: {
-      color: isDarkMode ? '#ffffff' : '#333333',
+      color: isDarkMode 
+        ? (error ? '#ffcccb' : '#ffffff')
+        : (error ? '#d32f2f' : '#333333'),
     },
     subtitleText: {
-      color: isDarkMode ? '#b0c4de' : '#666666',
+      color: isDarkMode 
+        ? (error ? '#ffb3b3' : isOfflineMode ? '#90ee90' : '#b0c4de')
+        : (error ? '#f57c00' : isOfflineMode ? '#2E7D32' : '#666666'),
     },
   });
 
@@ -89,21 +110,47 @@ function LoadingScreen({ isDarkMode }: { isDarkMode: boolean }) {
           transform: [{ scale: scaleValue }] 
         }
       ]}>
-        <Animated.View style={{ transform: [{ rotate: spin }] }}>
-          <ActivityIndicator size="large" color="#2E7D32" />
-        </Animated.View>
-        
-        <Animated.Text style={[styles.loadingText, dynamicStyles.loadingText]}>
-          AutoParking Control
-        </Animated.Text>
-        
-        <Animated.Text style={[styles.loadingSubtitle, dynamicStyles.subtitleText]}>
-          Inicializando sistema...
-        </Animated.Text>
-        
-        <View style={styles.loadingBar}>
-          <View style={styles.loadingBarFill} />
-        </View>
+        {error ? (
+          // Estado de error
+          <>
+            <Text style={[styles.errorIcon]}>⚠️</Text>
+            <Text style={[styles.loadingText, dynamicStyles.loadingText]}>
+              Error de Inicialización
+            </Text>
+            <Text style={[styles.loadingSubtitle, dynamicStyles.subtitleText]}>
+              {error}
+            </Text>
+            <TouchableOpacity style={styles.retryButton} onPress={onRetry}>
+              <Text style={styles.retryButtonText}>Reintentar</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          // Estado de carga normal
+          <>
+            <Animated.View style={{ transform: [{ rotate: spin }] }}>
+              <ActivityIndicator size="large" color={isOfflineMode ? "#4CAF50" : "#2E7D32"} />
+            </Animated.View>
+            
+            <Animated.Text style={[styles.loadingText, dynamicStyles.loadingText]}>
+              AutoParking Control
+            </Animated.Text>
+            
+            <Animated.Text style={[styles.loadingSubtitle, dynamicStyles.subtitleText]}>
+              {initProgress}
+            </Animated.Text>
+
+            {/* Indicador de modo offline */}
+            {isOfflineMode && (
+              <View style={styles.offlineIndicator}>
+                <Text style={styles.offlineText}>📶 Modo Offline</Text>
+              </View>
+            )}
+            
+            <View style={styles.loadingBar}>
+              <View style={[styles.loadingBarFill, isOfflineMode && { backgroundColor: '#4CAF50' }]} />
+            </View>
+          </>
+        )}
       </Animated.View>
     </View>
   );
@@ -111,21 +158,85 @@ function LoadingScreen({ isDarkMode }: { isDarkMode: boolean }) {
 
 export default function App() {
   const isDarkMode = useColorScheme() === 'dark';
-  const [dbReady, setDbReady] = useState(false);
+  const [appState, setAppState] = useState<AppState>('loading');
+  const [initProgress, setInitProgress] = useState('Iniciando sistema...');
+  const [initError, setInitError] = useState<string | null>(null);
+  const [isOfflineMode, setIsOfflineMode] = useState(false);
   const [user, setUser] = useState<{ username: string; name: string; role: string } | null>(null);
   const [currentAdminScreen, setCurrentAdminScreen] = useState<AdminScreenType>('main');
   
   // ⬇️ ANIMACIÓN PARA TRANSICIONES
   const fadeAnim = React.useRef(new Animated.Value(1)).current;
 
+  // ⬇️ INICIALIZACIÓN MEJORADA PARA SUPABASE + OFFLINE + REALTIME
+  const initializeDatabase = async () => {
+    try {
+      setAppState('loading');
+      setInitError(null);
+      setIsOfflineMode(false);
+      setInitProgress('Conectando a Supabase...');
+      
+      console.time('⏱️ Inicialización total de la app');
+      
+      // Inicializar el nuevo databaseService (Supabase)
+      await databaseService.initDatabase();
+      
+      // Verificar estado de conectividad
+      const isOnline = databaseService.isConnected();
+      setIsOfflineMode(!isOnline);
+      
+      if (isOnline) {
+        setInitProgress('Conectado a la nube ✓');
+        console.log('🌐 Modo Online - Supabase conectado');
+      } else {
+        setInitProgress('Trabajando sin conexión ✓');
+        console.log('📱 Modo Offline - Usando cache local');
+      }
+      
+      // Pequeña pausa para mostrar el mensaje de éxito
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      console.timeEnd('⏱️ Inicialización total de la app');
+      setAppState('ready');
+      
+    } catch (error) {
+      console.error('❌ Error inicializando la aplicación:', error);
+      
+      // Intentar modo offline como fallback
+      try {
+        console.log('🔄 Intentando modo offline...');
+        setInitProgress('Activando modo offline...');
+        setIsOfflineMode(true);
+        
+        // Pequeña pausa
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        console.log('📱 Modo offline activado');
+        setAppState('ready');
+        
+      } catch (offlineError) {
+        console.error('❌ Error en modo offline:', offlineError);
+        setInitError(
+          error instanceof Error 
+            ? `Conexión fallida: ${error.message}` 
+            : 'Error desconocido al conectar con Supabase'
+        );
+        setAppState('error');
+      }
+    }
+  };
+
   useEffect(() => {
-    databaseService.initDatabase().then(() => {
-      // Pequeño delay para mostrar la pantalla de loading
-      setTimeout(() => setDbReady(true), 1500);
-    });
+    initializeDatabase();
   }, []);
 
-  // ⬇️ FUNCIONES CON ANIMACIONES DE TRANSICIÓN
+  // ⬇️ FUNCIÓN PARA REINTENTAR INICIALIZACIÓN
+  const handleRetry = () => {
+    console.log('🔄 Reintentando conexión a Supabase...');
+    initializeDatabase();
+  };
+
+  // ⬇️ FUNCIONES CON ANIMACIONES DE TRANSICIÓN (sin cambios)
   const handleLogout = () => {
     Animated.timing(fadeAnim, {
       toValue: 0,
@@ -162,9 +273,17 @@ export default function App() {
   const handleNavigateToSettings = () => navigateWithAnimation('settings');
   const handleBackToAdmin = () => navigateWithAnimation('main');
 
-  // ⬇️ PANTALLA DE LOADING MEJORADA
-  if (!dbReady) {
-    return <LoadingScreen isDarkMode={isDarkMode} />;
+  // ⬇️ MOSTRAR PANTALLA DE LOADING O ERROR
+  if (appState !== 'ready') {
+    return (
+      <LoadingScreen 
+        isDarkMode={isDarkMode} 
+        initProgress={initProgress}
+        error={initError}
+        onRetry={handleRetry}
+        isOfflineMode={isOfflineMode}
+      />
+    );
   }
 
   let content = <LoginScreen onLoginSuccess={setUser} />;
@@ -213,6 +332,16 @@ export default function App() {
         backgroundColor={dynamicStatusBarBackground}
         translucent={false}
       />
+      
+      {/* Indicador de conectividad en la app */}
+      {isOfflineMode && appState === 'ready' && (
+        <View style={styles.connectivityBanner}>
+          <Text style={styles.connectivityText}>
+            📱 Trabajando sin conexión - Los datos se sincronizarán automáticamente
+          </Text>
+        </View>
+      )}
+      
       <Animated.View style={[styles.contentContainer, { opacity: fadeAnim }]}>
         {content}
       </Animated.View>
@@ -274,5 +403,49 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.8,
     shadowRadius: 4,
+  },
+  // ⬇️ ESTILOS PARA ESTADOS DE ERROR
+  errorIcon: {
+    fontSize: 48,
+    marginBottom: 16,
+  },
+  retryButton: {
+    backgroundColor: '#2E7D32',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+    marginTop: 20,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  // ⬇️ NUEVOS ESTILOS PARA CONECTIVIDAD
+  offlineIndicator: {
+    backgroundColor: 'rgba(76, 175, 80, 0.1)',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 12,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(76, 175, 80, 0.3)',
+  },
+  offlineText: {
+    color: '#4CAF50',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  connectivityBanner: {
+    backgroundColor: '#4CAF50',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+  },
+  connectivityText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
   },
 });
