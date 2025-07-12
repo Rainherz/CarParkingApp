@@ -10,6 +10,7 @@ export default function OperatorModals({
   vehicleForTicket,
   onTicketGenerated,
   handlePlateDetectorSuccess,
+  currentUser,
 }: {
   showPlateDetector: boolean;
   setShowPlateDetector: (v: boolean) => void;
@@ -18,6 +19,7 @@ export default function OperatorModals({
   vehicleForTicket: any;
   onTicketGenerated: (success: boolean) => void;
   handlePlateDetectorSuccess: (plate: string) => void;
+  currentUser?: { id: number; username: string; name: string; role: string };
 }) {
   return (
     <>
@@ -25,6 +27,7 @@ export default function OperatorModals({
         visible={showPlateDetector}
         onClose={() => setShowPlateDetector(false)}
         onSuccess={handlePlateDetectorSuccess}
+        currentUser={currentUser}
       />
       <TicketPreview
         visible={showTicketPreview}

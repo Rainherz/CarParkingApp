@@ -22,15 +22,17 @@ interface PlateDetectorProps {
   visible: boolean;
   onClose: () => void;
   onSuccess: (plateNumber: string) => void;
+  currentUser?: { id: number; username: string; name: string; role: string };
 }
 
-export default function PlateDetector({ visible, onClose, onSuccess }: PlateDetectorProps) {
+export default function PlateDetector({ visible, onClose, onSuccess, currentUser }: PlateDetectorProps) {
   const [step, setStep] = useState<'camera' | 'processing' | 'confirm'>('camera');
   const [imageUri, setImageUri] = useState<string>('');
   const [detectedPlate, setDetectedPlate] = useState<string>('');
   const [confidence, setConfidence] = useState<number>(0);
   const [manualPlate, setManualPlate] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState(false);
+  
 
   // Resetear estado al abrir/cerrar
   React.useEffect(() => {
@@ -119,6 +121,12 @@ export default function PlateDetector({ visible, onClose, onSuccess }: PlateDete
     try {
       setIsProcessing(true);
       
+      // ✅ VALIDAR que tengamos información del usuario
+      if (!currentUser || !currentUser.id) {
+        Alert.alert('Error', 'No se pudo identificar el operador. Intenta cerrar sesión e ingresar nuevamente.');
+        return;
+      }
+
       // Verificar si ya existe un vehículo activo con esta placa
       const existingVehicle = await databaseService.getActiveVehicle(plateNumber);
       if (existingVehicle) {
@@ -131,11 +139,11 @@ export default function PlateDetector({ visible, onClose, onSuccess }: PlateDete
       }
 
       // Registrar entrada en la base de datos
-      await databaseService.registerEntry(plateNumber, confidence);
-      
+      await databaseService.registerEntry(plateNumber, currentUser.id, confidence);
+
       Alert.alert(
         'Entrada Registrada',
-        `Vehículo ${plateNumber} registrado exitosamente`,
+        `Vehículo ${plateNumber} registrado exitosamente por ${currentUser.name}.`,
         [{ text: 'OK', onPress: () => {
           onSuccess(plateNumber);
           onClose();

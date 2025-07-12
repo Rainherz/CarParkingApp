@@ -4,7 +4,7 @@ import { ThemedText } from "../components/common/ThemedText";
 import { authService } from "../services/authService";
 
 interface LoginScreenProps {
-  onLoginSuccess: (user: { username: string; name: string; role: string }) => void;
+  onLoginSuccess: (user: { id: number; username: string; name: string; role: string }) => void;
 }
 
 export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {

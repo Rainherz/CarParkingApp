@@ -1,11 +1,6 @@
 import { createClient, SupabaseClient, RealtimeChannel } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
-// ========================================
-// CONFIGURACIÓN DE SUPABASE
-// ========================================
-const supabaseUrl = 'https://gpxzykdevxgoqcrbcobg.supabase.co'; // ← CAMBIAR POR TU URL
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdweHp5a2Rldnhnb3FjcmJjb2JnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIyNTM2NDgsImV4cCI6MjA2NzgyOTY0OH0.JLz9z8i6YXMfnEKk6AM3VLi32uM35sIDqm6CQYdxACw'; // ← CAMBIAR POR TU KEY
+import { supabase } from '../../../../../utils/supabase';
 
 // ========================================
 // INTERFACES (mantienen compatibilidad con código existente)
@@ -19,8 +14,10 @@ interface VehicleEntry {
   amount?: number;
   status: 'parked' | 'exited';
   confidence?: number; // confianza del OCR
+  operatorId?: number; // ✅ Agregar operatorId
   createdAt?: string;
 }
+
 
 interface DailySummary {
   totalVehicles: number;
@@ -33,7 +30,7 @@ interface DailySummary {
 // SERVICIO DE BASE DE DATOS CON SUPABASE + OFFLINE + REALTIME
 // ========================================
 class DatabaseService {
-  private supabase: SupabaseClient | null = null;
+  private supabaseClient: SupabaseClient = supabase; // ✅ USAR INSTANCIA ÚNICA
   private isOnline: boolean = true;
   private realtimeChannels: RealtimeChannel[] = [];
   private offlineQueue: any[] = [];
@@ -47,8 +44,6 @@ class DatabaseService {
   };
 
   constructor() {
-    // Inicializar cliente de Supabase
-    // this.supabase = createClient(supabaseUrl, supabaseAnonKey);
     this.setupNetworkListener();
   }
 
@@ -59,15 +54,8 @@ class DatabaseService {
     try {
       console.log('🔄 Conectando a Supabase...');
       
-      this.supabase = createClient(supabaseUrl, supabaseAnonKey, {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-        },
-      });
-
-      if (!this.supabase) {
-        throw new Error('Cliente de Supabase no inicializado');
+      if (!this.supabaseClient) {
+        throw new Error('Cliente de Supabase no disponible');
       }
 
       // Probar conexión
@@ -101,14 +89,14 @@ class DatabaseService {
   // FUNCIONES DE CONECTIVIDAD Y CACHE
   // ========================================
   private async testConnection(): Promise<void> {
-    const { data, error } = await this.supabase!
-      .from('app_settings')
-      .select('key')
-      .limit(1);
-    
-    if (error) throw error;
-    this.isOnline = true;
-  }
+  const { data, error } = await this.supabaseClient 
+    .from('app_settings')
+    .select('key')
+    .limit(1);
+  
+  if (error) throw error;
+  this.isOnline = true;
+}
 
   private setupNetworkListener() {
     // En React Native, podrías usar @react-native-community/netinfo
@@ -139,10 +127,10 @@ class DatabaseService {
   // REALTIME SUBSCRIPTIONS
   // ========================================
   private async setupRealtimeSubscriptions() {
-    if (!this.supabase || !this.isOnline) return;
+    if (!this.supabaseClient  || !this.isOnline) return;
 
     // Suscribirse a cambios en vehicle_entries
-    const vehicleChannel = this.supabase
+    const vehicleChannel = this.supabaseClient 
       .channel('vehicle_entries_changes')
       .on(
         'postgres_changes',
@@ -156,7 +144,7 @@ class DatabaseService {
       .subscribe();
 
     // Suscribirse a cambios en app_settings
-    const settingsChannel = this.supabase
+    const settingsChannel = this.supabaseClient 
       .channel('settings_changes')
       .on(
         'postgres_changes',
@@ -238,65 +226,72 @@ class DatabaseService {
   // Registrar entrada de vehículo
   async registerEntry(
   plateNumber: string,
-  operatorId?: number,
+  operatorId?: number, // ✅ Hacer este parámetro requerido en la práctica
   confidence?: number,
 ): Promise<number> {
   try {
-    // Verificar que Supabase esté inicializado
-    if (!this.supabase) {
-      console.warn('⚠️ Supabase no inicializado en registerEntry, agregando a cola offline');
+    // ✅ VALIDAR que se proporcione operatorId
+    if (!operatorId) {
+      console.warn('⚠️ Se intenta registrar vehículo sin operator_id');
+      // En modo offline, usar un ID temporal hasta que se sincronice
+      operatorId = -1; // ID temporal que se actualizará en sincronización
+    }
+
+    console.log(`🚗 Registrando vehículo ${plateNumber} por operador ${operatorId}`);
+
+    // Verificar que Supabase esté disponible
+    if (!this.supabaseClient) {
+      console.warn('⚠️ Supabase no disponible, registrando offline con operador');
       
-      // Modo offline: agregar a cola
       await this.addToOfflineQueue({
         type: 'registerEntry',
         plateNumber,
-        operatorId,
+        operatorId, // ✅ Incluir operatorId en cola offline
         confidence,
       });
       
-      // Agregar al cache local inmediatamente
       const localEntry: VehicleEntry = {
         id: Date.now(),
         plateNumber,
         entryTime: new Date().toISOString(),
         status: 'parked',
         confidence: confidence || 0,
+        operatorId, // ✅ Guardar operatorId en cache local
       };
       
       this.cache.activeVehicles.push(localEntry);
       await this.saveOfflineCache();
       
-      console.log('✅ Vehículo registrado offline:', plateNumber);
+      console.log(`✅ Vehículo registrado offline por operador ${operatorId}:`, plateNumber);
       return localEntry.id!;
     }
 
     if (!this.isOnline) {
-      // Modo offline: agregar a cola
       await this.addToOfflineQueue({
         type: 'registerEntry',
         plateNumber,
-        operatorId,
+        operatorId, // ✅ Incluir operatorId
         confidence,
       });
       
-      // Agregar al cache local inmediatamente
       const localEntry: VehicleEntry = {
         id: Date.now(),
         plateNumber,
         entryTime: new Date().toISOString(),
         status: 'parked',
         confidence: confidence || 0,
+        operatorId, // ✅ Guardar operatorId
       };
       
       this.cache.activeVehicles.push(localEntry);
       await this.saveOfflineCache();
       
-      console.log('✅ Vehículo registrado offline:', plateNumber);
+      console.log(`✅ Vehículo registrado offline por operador ${operatorId}:`, plateNumber);
       return localEntry.id!;
     }
 
     const entryTime = new Date().toISOString();
-    const { data, error } = await this.supabase
+    const { data, error } = await this.supabaseClient
       .from('vehicle_entries')
       .insert([
         {
@@ -304,7 +299,7 @@ class DatabaseService {
           entry_time: entryTime,
           status: 'parked',
           confidence: confidence || 0,
-          operator_id: operatorId || null,
+          operator_id: operatorId, // ✅ SIEMPRE incluir operator_id
         },
       ])
       .select('id')
@@ -313,11 +308,10 @@ class DatabaseService {
     if (error) {
       console.warn('⚠️ Error en Supabase registerEntry, registrando offline:', error);
       
-      // Fallback a modo offline
       await this.addToOfflineQueue({
         type: 'registerEntry',
         plateNumber,
-        operatorId,
+        operatorId, // ✅ Incluir en fallback
         confidence,
       });
       
@@ -327,16 +321,17 @@ class DatabaseService {
         entryTime,
         status: 'parked',
         confidence: confidence || 0,
+        operatorId, // ✅ Incluir en fallback
       };
       
       this.cache.activeVehicles.push(localEntry);
       await this.saveOfflineCache();
       
-      console.log('✅ Vehículo registrado offline (fallback):', plateNumber);
+      console.log(`✅ Vehículo registrado offline (fallback) por operador ${operatorId}:`, plateNumber);
       return localEntry.id!;
     }
 
-    console.log('✅ Vehículo registrado online:', plateNumber);
+    console.log(`✅ Vehículo registrado online por operador ${operatorId}:`, plateNumber);
     await this.refreshActiveVehiclesCache();
     return data.id;
   } catch (error) {
@@ -390,7 +385,7 @@ class DatabaseService {
         amount += additionalHours * additionalRate;
       }
 
-      const { data, error } = await this.supabase!
+      const { data, error } = await this.supabaseClient !
         .from('vehicle_entries')
         .update({
           exit_time: exitTime,
@@ -427,7 +422,7 @@ class DatabaseService {
   async getActiveVehicle(plateNumber: string): Promise<VehicleEntry | null> {
   try {
     // Verificar que Supabase esté inicializado
-    if (!this.supabase) {
+    if (!this.supabaseClient ) {
       console.warn('⚠️ Supabase no inicializado en getActiveVehicle, buscando en cache');
       
       // Buscar en cache offline
@@ -445,7 +440,7 @@ class DatabaseService {
       return cached || null;
     }
 
-    const { data, error } = await this.supabase
+    const { data, error } = await this.supabaseClient 
       .from('vehicle_entries')
       .select('*')
       .eq('plate_number', plateNumber)
@@ -484,7 +479,7 @@ class DatabaseService {
   async getActiveVehicles(): Promise<VehicleEntry[]> {
   try {
     // Verificar que Supabase esté inicializado
-    if (!this.supabase) {
+    if (!this.supabaseClient ) {
       console.warn('⚠️ Supabase no inicializado en getActiveVehicles, usando cache/datos simulados');
       
       // Retornar datos simulados si no hay cache
@@ -499,7 +494,7 @@ class DatabaseService {
       return this.cache.activeVehicles.filter(v => v.status === 'parked');
     }
 
-    const { data, error } = await this.supabase
+    const { data, error } = await this.supabaseClient 
       .from('vehicle_entries')
       .select('*')
       .eq('status', 'parked')
@@ -538,7 +533,7 @@ class DatabaseService {
     const targetDate = date || new Date().toISOString().split('T')[0];
 
     // Verificar que Supabase esté inicializado
-    if (!this.supabase) {
+    if (!this.supabaseClient ) {
       console.warn('⚠️ Supabase no inicializado en getDailySummary, usando datos por defecto');
       
       // Calcular desde cache si está disponible
@@ -562,7 +557,7 @@ class DatabaseService {
       };
     }
 
-    const { data, error } = await this.supabase
+    const { data, error } = await this.supabaseClient 
       .from('vehicle_entries')
       .select('status, amount, duration')
       .gte('entry_time', `${targetDate}T00:00:00`)
@@ -624,7 +619,7 @@ class DatabaseService {
         return this.cache.settings[key];
       }
 
-      const { data, error } = await this.supabase!
+      const { data, error } = await this.supabaseClient !
         .from('app_settings')
         .select('value')
         .eq('key', key)
@@ -662,7 +657,7 @@ class DatabaseService {
         return;
       }
 
-      const { error } = await this.supabase!
+      const { error } = await this.supabaseClient !
         .from('app_settings')
         .upsert([
           {
@@ -687,22 +682,22 @@ class DatabaseService {
   async getUser(username: string, password: string) {
   try {
     // Verificar que Supabase esté inicializado
-    if (!this.supabase) {
+    if (!this.supabaseClient ) {
       console.warn('⚠️ Supabase no inicializado, verificando usuarios locales...');
       
       // Fallback a usuarios por defecto si no hay conexión
       const defaultUsers = [
-        { username: 'admin', password: 'admin123', name: 'Administrador del Sistema', role: 'admin' },
-        { username: 'operador', password: 'operador123', name: 'Operador Principal', role: 'operador' }
+        { id: 1, username: 'admin', password: 'admin123', name: 'Administrador del Sistema', role: 'admin' },
+        { id: 2, username: 'operador', password: 'operador123', name: 'Operador Principal', role: 'operador' }
       ];
       
       const user = defaultUsers.find(u => u.username === username && u.password === password);
       return user || null;
     }
 
-    const { data, error } = await this.supabase
+    const { data, error } = await this.supabaseClient 
       .from('users')
-      .select('username, name, role')
+      .select('id, username, name, role')
       .eq('username', username)
       .eq('password', password)
       .eq('is_active', 1)
@@ -713,8 +708,8 @@ class DatabaseService {
       
       // Fallback a usuarios por defecto
       const defaultUsers = [
-        { username: 'admin', password: 'admin123', name: 'Administrador del Sistema', role: 'admin' },
-        { username: 'operador', password: 'operador123', name: 'Operador Principal', role: 'operador' }
+        { id: 1, username: 'admin', password: 'admin123', name: 'Administrador del Sistema', role: 'admin' },
+        { id: 2, username: 'operador', password: 'operador123', name: 'Operador Principal', role: 'operador' }
       ];
       
       const user = defaultUsers.find(u => u.username === username && u.password === password);
@@ -727,9 +722,9 @@ class DatabaseService {
     
     // Fallback final a usuarios por defecto
     const defaultUsers = [
-      { username: 'admin', password: 'admin123', name: 'Administrador del Sistema', role: 'admin' },
-      { username: 'operador', password: 'operador123', name: 'Operador Principal', role: 'operador' }
-    ];
+        { id: 1, username: 'admin', password: 'admin123', name: 'Administrador del Sistema', role: 'admin' },
+        { id: 2, username: 'operador', password: 'operador123', name: 'Operador Principal', role: 'operador' }
+      ];
     
     const user = defaultUsers.find(u => u.username === username && u.password === password);
     return user || null;
@@ -740,54 +735,186 @@ class DatabaseService {
   // FUNCIONES DE ADMINISTRACIÓN
   // ========================================
 
-  async getReports({ operatorId = 'all', startDate = '', endDate = '' } = {}) {
+  // ============================================
+// CORREGIR: getReports() con filtro por operador
+// ============================================
+
+async getReports({ operatorId = 'all', startDate = '', endDate = '' } = {}) {
   try {
-    // Verificar que Supabase esté inicializado
-    if (!this.supabase) {
-      console.warn('⚠️ Supabase no inicializado en getReports, retornando datos vacíos');
+    // Verificar que Supabase esté disponible
+    if (!this.supabaseClient) {
+      console.warn('⚠️ Supabase no disponible en getReports, retornando datos vacíos');
       return [];
     }
 
-    let query = this.supabase
+    console.log('🔍 Obteniendo reportes con filtros:', { operatorId, startDate, endDate });
+
+    // ✅ PASO 1: Construir consulta de vehicle_entries con filtros
+    let query = this.supabaseClient
       .from('vehicle_entries')
-      .select(`
-        *,
-        users(name)
-      `)
+      .select('*')
       .order('entry_time', { ascending: false });
 
+    // ✅ FILTRO POR OPERADOR - Convertir string a número si es necesario
     if (operatorId !== 'all') {
-      query = query.eq('operator_id', operatorId);
+      const operatorIdNumber = parseInt(operatorId, 10);
+      if (!isNaN(operatorIdNumber)) {
+        query = query.eq('operator_id', operatorIdNumber);
+        console.log(`🎯 Filtrando por operador ID: ${operatorIdNumber}`);
+      } else {
+        console.warn(`⚠️ ID de operador inválido: ${operatorId}`);
+        return []; // Retornar vacío si el ID es inválido
+      }
     }
+
+    // ✅ FILTROS POR FECHA
     if (startDate) {
       query = query.gte('entry_time', `${startDate}T00:00:00`);
+      console.log(`📅 Fecha desde: ${startDate}`);
     }
     if (endDate) {
       query = query.lte('entry_time', `${endDate}T23:59:59`);
+      console.log(`📅 Fecha hasta: ${endDate}`);
     }
 
-    const { data, error } = await query;
-    if (error) {
-      console.warn('⚠️ Error en Supabase getReports, retornando datos vacíos:', error);
+    // Ejecutar consulta principal
+    const { data: vehicleEntries, error: vehicleError } = await query;
+    
+    if (vehicleError) {
+      console.warn('⚠️ Error en Supabase getReports (vehicle_entries):', vehicleError);
       return [];
     }
 
-    return data.map(row => ({
-      id: row.id,
-      plateNumber: row.plate_number,
-      operatorName: row.users?.name || 'Sistema',
-      entryTime: new Date(row.entry_time).toLocaleString('es-PE'),
-      exitTime: row.exit_time 
-        ? new Date(row.exit_time).toLocaleString('es-PE') 
-        : null,
-      duration: row.duration 
-        ? `${Math.floor(row.duration / 60)}h ${row.duration % 60}m` 
-        : null,
-      amount: row.amount || 0,
-      status: row.status === 'exited' ? 'completed' : 'active',
-    }));
+    if (!vehicleEntries || vehicleEntries.length === 0) {
+      console.log('📭 No se encontraron vehículos con los filtros aplicados');
+      return [];
+    }
+
+    console.log(`✅ Se encontraron ${vehicleEntries.length} registros de vehículos`);
+
+    // ✅ PASO 2: Obtener información de operadores
+    let operatorNames: Record<string, string> = {};
+
+    if (operatorId === 'all') {
+      // Si mostramos todos, obtener nombres de todos los operadores únicos
+      const operatorIds = [...new Set(
+        vehicleEntries
+          .map(entry => entry.operator_id)
+          .filter(id => id !== null && id !== undefined)
+      )];
+
+      if (operatorIds.length > 0) {
+        try {
+          const { data: operators, error: operatorError } = await this.supabaseClient
+            .from('users')
+            .select('id, name')
+            .in('id', operatorIds);
+
+          if (operatorError) {
+            console.warn('⚠️ Error obteniendo nombres de operadores:', operatorError);
+          } else {
+            operatorNames = operators.reduce((acc, op) => {
+              acc[op.id] = op.name;
+              return acc;
+            }, {} as Record<string, string>);
+            console.log(`👥 Nombres de operadores obtenidos: ${Object.keys(operatorNames).length}`);
+          }
+        } catch (operatorFetchError) {
+          console.warn('⚠️ Error en consulta de operadores:', operatorFetchError);
+        }
+      }
+    } else {
+      // Si filtramos por operador específico, obtener solo ese nombre
+      const operatorIdNumber = parseInt(operatorId, 10);
+      try {
+        const { data: operator, error: operatorError } = await this.supabaseClient
+          .from('users')
+          .select('id, name')
+          .eq('id', operatorIdNumber)
+          .single();
+
+        if (operatorError) {
+          console.warn('⚠️ Error obteniendo nombre del operador:', operatorError);
+        } else if (operator) {
+          operatorNames[operator.id] = operator.name;
+          console.log(`👤 Operador encontrado: ${operator.name}`);
+        }
+      } catch (operatorFetchError) {
+        console.warn('⚠️ Error en consulta del operador específico:', operatorFetchError);
+      }
+    }
+
+    // ✅ PASO 3: Mapear y formatear los resultados
+    const formattedReports = vehicleEntries.map(row => {
+      const operatorName = row.operator_id 
+        ? (operatorNames[row.operator_id] || `Operador ${row.operator_id}`)
+        : 'Sistema';
+
+      return {
+        id: row.id,
+        plateNumber: row.plate_number,
+        operatorName: operatorName,
+        entryTime: new Date(row.entry_time).toLocaleString('es-PE'),
+        exitTime: row.exit_time 
+          ? new Date(row.exit_time).toLocaleString('es-PE') 
+          : null,
+        duration: row.duration 
+          ? `${Math.floor(row.duration / 60)}h ${row.duration % 60}m` 
+          : null,
+        amount: row.amount || 0,
+        status: row.status === 'exited' ? 'completed' : 'active',
+      };
+    });
+
+    console.log(`✅ Reportes formateados: ${formattedReports.length} registros`);
+    
+    // ✅ PASO 4: Log adicional para debug
+    if (operatorId !== 'all') {
+      const operatorName = Object.values(operatorNames)[0] || `Operador ${operatorId}`;
+      console.log(`📊 Vehículos registrados por ${operatorName}: ${formattedReports.length}`);
+    }
+
+    return formattedReports;
+
   } catch (error) {
     console.error('❌ Error obteniendo reportes:', error);
+    return [];
+  }
+}
+
+// ============================================
+// FUNCIÓN AUXILIAR: Verificar operadores disponibles
+// ============================================
+
+async getAvailableOperatorsForReports() {
+  try {
+    if (!this.supabaseClient) {
+      return [];
+    }
+
+    // Obtener operadores que tienen vehículos registrados
+    const { data: vehicleEntries } = await this.supabaseClient
+      .from('vehicle_entries')
+      .select('operator_id')
+      .not('operator_id', 'is', null);
+
+    if (!vehicleEntries) return [];
+
+    const operatorIds = [...new Set(vehicleEntries.map(entry => entry.operator_id))];
+
+    if (operatorIds.length === 0) return [];
+
+    const { data: operators } = await this.supabaseClient
+      .from('users')
+      .select('id, name, username')
+      .in('id', operatorIds)
+      .eq('role', 'operador')
+      .order('name');
+
+    return operators || [];
+
+  } catch (error) {
+    console.error('❌ Error obteniendo operadores disponibles:', error);
     return [];
   }
 }
@@ -795,7 +922,7 @@ class DatabaseService {
   async getOperators() {
   try {
     // Verificar que Supabase esté inicializado
-    if (!this.supabase) {
+    if (!this.supabaseClient) {
       console.warn('⚠️ Supabase no inicializado en getOperators, retornando operadores por defecto');
       
       // Retornar operadores por defecto
@@ -814,7 +941,7 @@ class DatabaseService {
       ];
     }
 
-    const { data, error } = await this.supabase
+    const { data, error } = await this.supabaseClient
       .from('users')
       .select('*')
       .eq('role', 'operador')
@@ -844,7 +971,7 @@ class DatabaseService {
         let totalEarnings = 0;
 
         try {
-          const { data: stats } = await this.supabase!
+          const { data: stats } = await this.supabaseClient
             .from('vehicle_entries')
             .select('amount')
             .eq('operator_id', user.id)
@@ -879,7 +1006,7 @@ class DatabaseService {
 
   async addOperator(operator: any) {
     try {
-      const { error } = await this.supabase!
+      const { error } = await this.supabaseClient
         .from('users')
         .insert([
           {
@@ -903,7 +1030,7 @@ class DatabaseService {
 
   async updateOperator(operator: any) {
     try {
-      const { error } = await this.supabase!
+      const { error } = await this.supabaseClient
         .from('users')
         .update({
           name: operator.name,
@@ -923,7 +1050,7 @@ class DatabaseService {
 
   async setOperatorStatus(operatorId: string, isActive: boolean) {
     try {
-      const { error } = await this.supabase!
+      const { error } = await this.supabaseClient
         .from('users')
         .update({ is_active: isActive ? 1 : 0 })
         .eq('id', operatorId);
@@ -939,7 +1066,7 @@ class DatabaseService {
   // Funciones de configuraciones múltiples
   async getSettings(keys: string[]): Promise<Record<string, string>> {
     try {
-      const { data, error } = await this.supabase!
+      const { data, error } = await this.supabaseClient
         .from('app_settings')
         .select('key, value')
         .in('key', keys);
@@ -966,7 +1093,7 @@ class DatabaseService {
         updated_at: new Date().toISOString(),
       }));
 
-      const { error } = await this.supabase!
+      const { error } = await this.supabaseClient
         .from('app_settings')
         .upsert(settingsArray);
 
@@ -990,7 +1117,7 @@ class DatabaseService {
 }> {
   try {
     // Verificar que Supabase esté inicializado
-    if (!this.supabase) {
+    if (!this.supabaseClient) {
       console.warn('⚠️ Supabase no inicializado en getAllSettings, usando valores por defecto');
       
       // Retornar valores por defecto
@@ -1001,7 +1128,7 @@ class DatabaseService {
       };
     }
 
-    const { data, error } = await this.supabase
+    const { data, error } = await this.supabaseClient
       .from('app_settings')
       .select('key, value');
 
@@ -1086,7 +1213,7 @@ class DatabaseService {
 
   private async refreshSettingsCache() {
     try {
-      const { data, error } = await this.supabase!
+      const { data, error } = await this.supabaseClient
         .from('app_settings')
         .select('key, value');
 
@@ -1112,7 +1239,7 @@ class DatabaseService {
     try {
       // Cerrar subscripciones realtime
       this.realtimeChannels.forEach(channel => {
-        this.supabase?.removeChannel(channel);
+        this.supabaseClient?.removeChannel(channel);
       });
       this.realtimeChannels = [];
 

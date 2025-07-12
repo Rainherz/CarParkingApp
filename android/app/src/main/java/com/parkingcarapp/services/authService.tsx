@@ -1,6 +1,7 @@
 import { databaseService } from './databaseService';
 
 type User = {
+  id: number;
   username: string;
   name: string;
   role: string;

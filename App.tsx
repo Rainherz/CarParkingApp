@@ -162,7 +162,7 @@ export default function App() {
   const [initProgress, setInitProgress] = useState('Iniciando sistema...');
   const [initError, setInitError] = useState<string | null>(null);
   const [isOfflineMode, setIsOfflineMode] = useState(false);
-  const [user, setUser] = useState<{ username: string; name: string; role: string } | null>(null);
+  const [user, setUser] = useState<{ id: number; username: string; name: string; role: string } | null>(null);
   const [currentAdminScreen, setCurrentAdminScreen] = useState<AdminScreenType>('main');
   
   // ⬇️ ANIMACIÓN PARA TRANSICIONES
@@ -324,7 +324,13 @@ export default function App() {
           break;
       }
     } else {
-      content = <OperatorScreen onLogout={handleLogout} />;
+      // content = <OperatorScreen onLogout={handleLogout} />;
+      content = (
+      <OperatorScreen 
+        onLogout={handleLogout} 
+        currentUser={user} // ✅ PASAR información del usuario
+      />
+    );
     }
   }
 

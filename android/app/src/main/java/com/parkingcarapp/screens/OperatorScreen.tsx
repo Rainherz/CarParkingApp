@@ -13,9 +13,10 @@ import { useParkingData } from "../hooks/useParkingData";
 
 interface OperatorScreenProps {
   onLogout: () => void;
+  currentUser?: { id: number; username: string; name: string; role: string };
 }
 
-export default function OperatorScreen({ onLogout }: OperatorScreenProps) {
+export default function OperatorScreen({ onLogout, currentUser }: OperatorScreenProps) {
   // Estados para modales y UI
   const [showPlateDetector, setShowPlateDetector] = useState(false);
   const [showTicketPreview, setShowTicketPreview] = useState(false);
@@ -144,6 +145,7 @@ export default function OperatorScreen({ onLogout }: OperatorScreenProps) {
         vehicleForTicket={vehicleForTicket}
         onTicketGenerated={handleTicketGenerated}
         handlePlateDetectorSuccess={handlePlateDetectorSuccess}
+        currentUser={currentUser}
       />
 
       <OperatorLogoutButton onLogout={onLogout} />
