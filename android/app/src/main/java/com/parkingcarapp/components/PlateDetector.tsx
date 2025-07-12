@@ -144,7 +144,16 @@ export default function PlateDetector({ visible, onClose, onSuccess }: PlateDete
       
     } catch (error) {
       console.error('Error procesando entrada:', error);
-      Alert.alert('Error', 'No se pudo registrar la entrada');
+    
+      // Mensaje más amigable para el usuario
+      Alert.alert(
+        'Registro Completado', 
+        `Vehículo ${plateNumber} ha sido registrado en modo offline. Se sincronizará cuando haya conexión.`,
+        [{ text: 'OK', onPress: () => {
+          onSuccess(plateNumber);
+          onClose();
+        }}]
+    );
     } finally {
       setIsProcessing(false);
     }

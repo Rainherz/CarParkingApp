@@ -178,8 +178,19 @@ export default function App() {
       
       console.time('⏱️ Inicialización total de la app');
       
-      // Inicializar el nuevo databaseService (Supabase)
-      await databaseService.initDatabase();
+      console.log('🧪 Probando conexión directa a Supabase...');
+      try {
+        const { supabase } = await import('./android/app/src/utils/supebase');
+        const { data, error } = await supabase.from('app_settings').select('key').limit(1);
+        
+        if (error) {
+          console.warn('⚠️ Error en prueba directa:', error);
+        } else {
+          console.log('✅ Prueba directa de Supabase exitosa:', data);
+        }
+      } catch (testError) {
+        console.warn('⚠️ Prueba directa falló:', testError);
+      }
       
       // Verificar estado de conectividad
       const isOnline = databaseService.isConnected();

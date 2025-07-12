@@ -13,28 +13,39 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const [loading, setLoading] = useState(false);
 
   const handleLogin = async () => {
-    console.log('🔄 Iniciando login para:', username);
-    setLoading(true);
+  if (!username.trim() || !password.trim()) {
+    Alert.alert("Error", "Por favor ingresa usuario y contraseña");
+    return;
+  }
+
+  console.log('🔄 Iniciando login para:', username);
+  setLoading(true);
+  
+  try {
+    const user = await authService.login(username.trim(), password);
+    console.log("👤 Usuario autenticado:", user);
     
-    try {
-      const user = await authService.login(username, password);
-      console.log("👤 Usuario autenticado:", user);
-      
-      if (user) {
-        console.log('✅ Login exitoso, llamando onLoginSuccess', user);
-        onLoginSuccess(user);
-        Alert.alert("Éxito", `Bienvenido ${user.name}`);
-      } else {
-        console.log('❌ Login falló - credenciales incorrectas');
-        Alert.alert("Error", "Usuario o contraseña incorrectos");
-      }
-    } catch (error) {
-      console.error('💥 Error durante login:', error);
-      Alert.alert("Error", "Ocurrió un error durante el login");
-    } finally {
-      setLoading(false);
+    if (user) {
+      console.log('✅ Login exitoso, llamando onLoginSuccess', user);
+      onLoginSuccess(user);
+      Alert.alert("Éxito", `Bienvenido ${user.name}`);
+    } else {
+      console.log('❌ Login falló - credenciales incorrectas');
+      Alert.alert(
+        "Error de Autenticación", 
+        "Usuario o contraseña incorrectos.\n\nUsuarios de prueba:\n• admin / admin123\n• operador / operador123"
+      );
     }
-  };
+  } catch (error) {
+    console.error('💥 Error durante login:', error);
+    Alert.alert(
+      "Error de Conexión", 
+      "No se pudo conectar al servidor. La aplicación funcionará en modo offline con usuarios por defecto.\n\nUsuarios disponibles:\n• admin / admin123\n• operador / operador123"
+    );
+  } finally {
+    setLoading(false);
+  }
+};
 
   return (
     <View style={styles.container}>
