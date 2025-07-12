@@ -1,87 +1,34 @@
 buildscript {
     ext {
-        buildToolsVersion = "35.0.0"
+        buildToolsVersion = "34.0.0"
         minSdkVersion = 24
-        compileSdkVersion = 35
-        targetSdkVersion = 35
+        compileSdkVersion = 34  
+        targetSdkVersion = 34    
         ndkVersion = "27.1.12297006"
-        kotlinVersion = "2.0.21"
-        
-        // Versiones específicas para React Native 0.76.6
-        reactNativeVersion = "0.76.6"
-        androidGradlePluginVersion = "8.7.3"
+        kotlinVersion = "2.1.20"
     }
     repositories {
         google()
         mavenCentral()
     }
     dependencies {
-        // ✅ ESPECIFICAR VERSIÓN ESPECÍFICA del Android Gradle Plugin
-        classpath("com.android.tools.build:gradle:$androidGradlePluginVersion")
+        classpath("com.android.tools.build:gradle")
         classpath("com.facebook.react:react-native-gradle-plugin")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
-        
-        // ✅ REMOVER Google Services si no usas Firebase
-        // classpath 'com.google.gms:google-services:4.4.2'
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")
     }
 
     subprojects {
         afterEvaluate { project ->
             if (project.hasProperty("android")) {
-                project.android {
-                    compileSdkVersion = rootProject.ext.compileSdkVersion
-                    buildToolsVersion = rootProject.ext.buildToolsVersion
+            project.android {
+                compileSdkVersion = 34
+                buildToolsVersion = "34.0.0"
 
-                    defaultConfig {
-                        minSdkVersion = rootProject.ext.minSdkVersion
-                        targetSdkVersion = rootProject.ext.targetSdkVersion
-                        
-                        // ✅ AGREGAR configuraciones adicionales
-                        multiDexEnabled = true
-                        vectorDrawables.useSupportLibrary = true
-                    }
-                    
-                    // ✅ CONFIGURACIÓN PARA EVITAR ERRORES DE COMPILACIÓN
-                    compileOptions {
-                        sourceCompatibility JavaVersion.VERSION_11
-                        targetCompatibility JavaVersion.VERSION_11
-                    }
-                    
-                    // ✅ CONFIGURACIÓN DE KOTLIN
-                    if (project.hasProperty("android") && project.android.hasProperty("kotlinOptions")) {
-                        project.android.kotlinOptions {
-                            jvmTarget = '11'
-                        }
-                    }
+                defaultConfig {
+                targetSdkVersion = 34
                 }
             }
-        }
-    }
-}
-
-// ✅ CONFIGURACIÓN GLOBAL PARA TODOS LOS MÓDULOS
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-        // ✅ AGREGAR jcenter solo si es necesario (deprecated)
-        // jcenter() 
-        
-        // ✅ REPOSITORIO ESPECÍFICO PARA REACT NATIVE
-        maven { url("https://www.jitpack.io") }
-        
-        // ✅ REPOSITORIO LOCAL PARA REACT NATIVE
-        maven {
-            // All of React Native (JS, Obj-C sources, Android binaries) is installed from npm
-            url("$rootDir/../node_modules/react-native/android")
-        }
-    }
-    
-    // ✅ CONFIGURACIONES PARA EVITAR CONFLICTOS DE VERSIONES
-    configurations.all {
-        resolutionStrategy {
-            force "androidx.core:core-ktx:1.12.0"
-            force "androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0"
+            }
         }
     }
 }
