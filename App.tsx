@@ -11,7 +11,7 @@ import {
   Easing,
   TouchableOpacity
 } from 'react-native';
-import OperatorScreen from './android/app/src/main/java/com/parkingcarapp/screens/OperatorScreen';
+import  OperatorScreen  from './android/app/src/main/java/com/parkingcarapp/screens/OperatorScreen';
 import AdminScreen from './android/app/src/main/java/com/parkingcarapp/screens/AdminScreen';
 import LoginScreen from './android/app/src/main/java/com/parkingcarapp/screens/LoginScreen';
 import ReportsScreen from './android/app/src/main/java/com/parkingcarapp/screens/ReportsScreen';
@@ -180,7 +180,7 @@ export default function App() {
       
       console.log('🧪 Probando conexión directa a Supabase...');
       try {
-        const { supabase } = await import('./android/app/src/utils/supebase');
+        const { supabase } = await import('./android/app/src/utils/supabase');
         const { data, error } = await supabase.from('app_settings').select('key').limit(1);
         
         if (error) {
